@@ -89,10 +89,10 @@ export class AudioTrack extends Track {
     this.recording = null; // { peaks, start } while recording
   }
 
-  addClip(buffer, start = 0, offset = 0) {
+  addClip(buffer, start = 0, offset = 0, name = '', peaks = null) {
     const duration = buffer.duration - offset;
     if (duration <= 0) return null;
-    const clip = { buffer, peaks: Peaks.fromBuffer(buffer), start, offset, duration };
+    const clip = { name, buffer, peaks: peaks || Peaks.fromBuffer(buffer), start, offset, duration };
     this.clips.push(clip);
     return clip;
   }

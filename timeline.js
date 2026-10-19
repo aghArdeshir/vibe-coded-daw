@@ -3,6 +3,7 @@
 // long projects never hit canvas size limits.
 
 import { drawClip, drawGrid } from './waveform.js';
+import { LOOP_MIME } from './library.js';
 
 export const HEAD_W = 248;
 export const ROW_H = 108;
@@ -110,9 +111,30 @@ class TrackView {
     this.volv.textContent = fmtDb(track.volumeDb);
     this.panv.textContent = fmtPan(track.pan);
 
-    tl.bindScrub(this.canvas);
+    // On audio lanes a press on a clip selects/drags it; elsewhere it scrubs the playhead.
+    tl.bindScrub(this.canvas, track.kind === 'audio' ? (e) => this._pressClip(e) : null);
     if (track.kind === 'midi') this.canvas.addEventListener('dblclick', () => tl.cb.onEdit(track));
     this.refresh();
+  }
+
+  clipAt(t) {
+    const clips = this.track.clips;
+    for (let i = clips.length - 1; i >= 0; i--) {
+      const c = clips[i];
+      if (t >= c.start && t < c.start + c.duration) return c;
+    }
+    return null;
+  }
+
+  _pressClip(e) {
+    const clip = this.clipAt(this.tl.timeAt(e.clientX));
+    if (!clip) {
+      this.tl.select(null);
+      return false;
+    }
+    this.tl.select(this.track, clip);
+    this.tl.beginClipDrag(this, clip, e);
+    return true;
   }
 
   refresh() {
@@ -149,6 +171,7 @@ class TrackView {
           clipStart: c.start, offset: c.offset, duration: c.duration,
           viewStart, pps, w, h, color: AUDIO_COLOR, bg: AUDIO_BG,
         });
+        this._clipChrome(g, c, viewStart, pps, w, h);
       }
       const r = t.recording;
       if (r && r.start != null) {
@@ -183,6 +206,33 @@ class TrackView {
     }
   }
 
+  // Clip name label and selection outline.
+  _clipChrome(g, c, viewStart, pps, w, h) {
+    const x0 = (c.start - viewStart) * pps;
+    const cw = c.duration * pps;
+    if (x0 > w || x0 + cw < 0) return;
+    const sel = this.tl.selected?.clip === c;
+    if (c.name) {
+      g.save();
+      g.beginPath();
+      g.rect(x0, 2, cw, h - 4);
+      g.clip();
+      g.font = '11px system-ui, sans-serif';
+      g.textBaseline = 'top';
+      g.fillStyle = 'rgba(0,0,0,0.55)';
+      const tw = g.measureText(c.name).width;
+      const lx = Math.max(x0, 0);
+      g.fillRect(lx, 2, tw + 10, 16);
+      g.fillStyle = '#e8edf4';
+      g.fillText(c.name, lx + 5, 5);
+      g.restore();
+    }
+    g.strokeStyle = sel ? '#ffffff' : 'rgba(76,194,255,0.55)';
+    g.lineWidth = sel ? 2 : 1;
+    g.strokeRect(x0 + 0.5, 2.5, Math.max(1, cw - 1), h - 5);
+    g.lineWidth = 1;
+  }
+
   _hint(g, h, text) {
     g.fillStyle = '#4a525e';
     g.font = '12px system-ui, sans-serif';
@@ -201,6 +251,7 @@ export class Timeline {
     this.views = new Map();
     this.dirty = true;
     this.following = true;
+    this.selected = null; // { track, clip }
 
     el.style.setProperty('--head-w', `${HEAD_W}px`);
     el.style.setProperty('--row-h', `${ROW_H}px`);
@@ -208,10 +259,12 @@ export class Timeline {
       <div class="inner">
         <div class="row ruler-row"><div class="head corner">Tracks</div><div class="lane"><canvas></canvas></div></div>
         <div class="rows"></div>
-        <div class="hint">Drop WAV or MP3 files anywhere to add tracks — or use “+ Audio” / “+ MIDI” above.</div>
+        <div class="hint">Drag a loop from the library, or drop WAV / MP3 files anywhere — or use “+ Audio” / “+ MIDI” above.</div>
         <div class="playhead"></div>
+        <div class="dropmark" hidden></div>
       </div>`;
     this.inner = el.querySelector('.inner');
+    this.dropmark = el.querySelector('.dropmark');
     this.rows = el.querySelector('.rows');
     this.hint = el.querySelector('.hint');
     this.playhead = el.querySelector('.playhead');
@@ -221,6 +274,141 @@ export class Timeline {
     el.addEventListener('scroll', () => (this.dirty = true), { passive: true });
     new ResizeObserver(() => (this.dirty = true)).observe(el);
     this._layout();
+    this._bindLoopDrop();
+  }
+
+  // ---- coordinates ----
+
+  // Timeline time (s) under a client x. Unclamped.
+  timeAt(clientX) {
+    const r = this.el.getBoundingClientRect();
+    return (clientX - r.left - HEAD_W + this.el.scrollLeft) / this.pps;
+  }
+
+  snap(t) {
+    const spb = 60 / this.engine.bpm;
+    return Math.round(t / spb) * spb;
+  }
+
+  viewAtY(clientY) {
+    for (const v of this.views.values()) {
+      const r = v.row.getBoundingClientRect();
+      if (clientY >= r.top && clientY < r.bottom) return v;
+    }
+    return null;
+  }
+
+  // ---- loop drag & drop from the library ----
+
+  _bindLoopDrop() {
+    const el = this.el;
+    const isLoop = (e) => e.dataTransfer && [...e.dataTransfer.types].includes(LOOP_MIME);
+    let over = null;
+
+    const clear = () => {
+      this.dropmark.hidden = true;
+      over?.row.classList.remove('drop-target');
+      over = null;
+    };
+
+    el.addEventListener('dragover', (e) => {
+      if (!isLoop(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      const t = e.altKey ? Math.max(0, this.timeAt(e.clientX)) : Math.max(0, this.snap(this.timeAt(e.clientX)));
+      let view = this.viewAtY(e.clientY);
+      if (view && view.track.kind !== 'audio') view = null; // MIDI lanes can't hold audio: new track instead
+      if (view !== over) {
+        over?.row.classList.remove('drop-target');
+        view?.row.classList.add('drop-target');
+        over = view;
+      }
+      const top = view ? view.row.offsetTop : this.rows.offsetTop + this.rows.offsetHeight;
+      this.dropmark.style.left = `${HEAD_W + t * this.pps}px`;
+      this.dropmark.style.top = `${top}px`;
+      this.dropmark.style.height = `${ROW_H}px`;
+      this.dropmark.classList.toggle('newtrack', !view);
+      this.dropmark.hidden = false;
+    });
+
+    el.addEventListener('dragleave', (e) => {
+      if (isLoop(e) && !el.contains(e.relatedTarget)) clear();
+    });
+
+    el.addEventListener('drop', (e) => {
+      if (!isLoop(e)) return;
+      e.preventDefault();
+      const loopId = e.dataTransfer.getData(LOOP_MIME);
+      const t = e.altKey ? Math.max(0, this.timeAt(e.clientX)) : Math.max(0, this.snap(this.timeAt(e.clientX)));
+      const track = over ? over.track : null;
+      clear();
+      document.body.classList.remove('dragging-loop');
+      this.cb.onDropLoop?.({ loopId, track, time: t });
+    });
+  }
+
+  // ---- clip selection & editing ----
+
+  select(track, clip) {
+    this.selected = clip ? { track, clip } : null;
+    this.dirty = true;
+  }
+
+  // Drag a clip horizontally (snapped to beats; hold Alt for free) and
+  // vertically onto another audio track.
+  beginClipDrag(view, clip, e) {
+    const canvas = view.canvas;
+    canvas.setPointerCapture(e.pointerId);
+    const grab = this.timeAt(e.clientX) - clip.start;
+    let cur = view;
+    let moved = false;
+
+    const move = (ev) => {
+      moved = true;
+      let s = this.timeAt(ev.clientX) - grab;
+      if (!ev.altKey) s = this.snap(s);
+      clip.start = Math.max(0, s);
+      const over = this.viewAtY(ev.clientY);
+      if (over && over !== cur && over.track.kind === 'audio') {
+        cur.track.clips.splice(cur.track.clips.indexOf(clip), 1);
+        over.track.clips.push(clip);
+        cur = over;
+        this.selected = { track: over.track, clip };
+      }
+      this.dirty = true;
+    };
+    const up = () => {
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('pointercancel', up);
+      if (moved) this.cb.onClipsChanged?.();
+    };
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+  }
+
+  deleteSelected() {
+    const s = this.selected;
+    if (!s) return false;
+    const i = s.track.clips.indexOf(s.clip);
+    if (i >= 0) s.track.clips.splice(i, 1);
+    this.selected = null;
+    this.dirty = true;
+    this.cb.onClipsChanged?.();
+    return true;
+  }
+
+  // Copy the selected clip right after itself (handy for repeating a loop).
+  duplicateSelected() {
+    const s = this.selected;
+    if (!s) return false;
+    const copy = { ...s.clip, start: s.clip.start + s.clip.duration };
+    s.track.clips.push(copy);
+    this.selected = { track: s.track, clip: copy };
+    this.dirty = true;
+    this.cb.onClipsChanged?.();
+    return true;
   }
 
   get viewW() {
@@ -253,13 +441,16 @@ export class Timeline {
   }
 
   // Click or drag on a canvas to move the playhead.
-  bindScrub(canvas) {
+  // `claim(e)` may return true to take over the press (e.g. dragging a clip).
+  bindScrub(canvas, claim = null) {
     let down = false;
     const seek = (e) => {
       const r = canvas.getBoundingClientRect();
       this.cb.onSeek(Math.max(0, this.viewStart + (e.clientX - r.left) / this.pps));
     };
     canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (claim && claim(e)) return;
       down = true;
       canvas.setPointerCapture(e.pointerId);
       seek(e);
@@ -283,6 +474,7 @@ export class Timeline {
     if (!v) return;
     v.row.remove();
     this.views.delete(track);
+    if (this.selected?.track === track) this.selected = null;
     this.hint.hidden = this.views.size > 0;
     this.refresh();
     this.dirty = true;

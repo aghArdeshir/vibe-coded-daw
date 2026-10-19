@@ -1,0 +1,8 @@
+{
+  "loops": [
+    { "name": "Drums Groove", "file": "drums-groove-120.wav", "bpm": 120, "category": "Drums", "license": "CC0" },
+    { "name": "Hats 16th",    "file": "hats-16th-120.wav",    "bpm": 120, "category": "Drums", "license": "CC0" },
+    { "name": "Bass A minor", "file": "bass-aminor-120.wav",  "bpm": 120, "category": "Bass",  "license": "CC0" },
+    { "name": "Pad Chords",   "file": "chords-pad-120.wav",   "bpm": 120, "category": "Keys",  "license": "CC0" }
+  ]
+}

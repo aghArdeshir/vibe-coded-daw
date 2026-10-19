@@ -2,6 +2,7 @@ import { Engine } from './audio-engine.js';
 import { Timeline } from './timeline.js';
 import { PianoRoll } from './piano-roll.js';
 import { Recorder } from './recorder.js';
+import { Library } from './library.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,6 +19,16 @@ const timeline = new Timeline(engine, $('timeline'), {
   onRemove: removeTrack,
   onArm: armTrack,
   onEdit: openEditor,
+  onDropLoop: dropLoop,
+  onClipsChanged: () => {
+    timeline.dirty = true;
+    if (!recorder.active) engine.resync();
+  },
+});
+
+const library = new Library(engine, $('library'), {
+  status: (msg, err) => setStatus(msg, err),
+  onToggle: (open) => $('toggle-lib').classList.toggle('active', open),
 });
 
 const roll = new PianoRoll(engine, $('editor'), {
@@ -71,6 +82,30 @@ function openEditor(track) {
   timeline.setEditing(track);
 }
 
+// A loop was dropped from the library: onto an audio lane -> clip on that lane,
+// anywhere else -> a new audio track. `time` is already snapped to the beat grid.
+async function dropLoop({ loopId, track, time }) {
+  const loop = library.get(loopId);
+  if (!loop) return;
+  try {
+    setStatus(`Loading “${loop.name}”…`);
+    const buffer = await library.getBuffer(loop);
+    if (!track || !engine.tracks.includes(track)) track = addAudioTrack(loop.name);
+    const clip = track.addClip(buffer, time, 0, loop.name);
+    timeline.select(track, clip);
+    timeline.dirty = true;
+    if (!recorder.active) engine.resync();
+    const bpmNote =
+      loop.bpm && Math.abs(loop.bpm - engine.bpm) > 0.5
+        ? ` Note: the loop is ${loop.bpm} BPM but the project is ${engine.bpm} BPM.`
+        : '';
+    setStatus(`Placed “${loop.name}” on “${track.name}”.${bpmNote}`);
+    library.render(); // shows the now-known duration
+  } catch (err) {
+    setStatus(`Could not load “${loop.name}”: ${err.message || err}`, true);
+  }
+}
+
 // ---------- importing audio ----------
 
 const isAudioFile = (f) => /\.(wav|wave|mp3)$/i.test(f.name) || f.type.startsWith('audio/');
@@ -86,7 +121,7 @@ async function importFiles(fileList) {
       setStatus(`Decoding ${f.name}…`);
       const buffer = await engine.ctx.decodeAudioData(await f.arrayBuffer());
       const track = addAudioTrack(f.name.replace(/\.[^.]+$/, ''));
-      track.addClip(buffer, 0);
+      track.addClip(buffer, 0, 0, f.name.replace(/\.[^.]+$/, ''));
       setStatus(`Added “${f.name}” (${buffer.duration.toFixed(1)} s, ${buffer.numberOfChannels} ch).`);
     } catch (err) {
       setStatus(`Could not decode “${f.name}”: ${err.message || err}`, true);
@@ -97,6 +132,7 @@ async function importFiles(fileList) {
 
 let dragDepth = 0;
 const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+const overLibrary = (e) => e.target instanceof Element && !!e.target.closest('#library');
 window.addEventListener('dragenter', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
@@ -104,7 +140,11 @@ window.addEventListener('dragenter', (e) => {
   $('dropzone').classList.add('show');
 });
 window.addEventListener('dragover', (e) => {
-  if (hasFiles(e)) e.preventDefault();
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  $('dropmsg').textContent = overLibrary(e)
+    ? 'Drop to add to the loop library'
+    : 'Drop WAV / MP3 files to add them as tracks';
 });
 window.addEventListener('dragleave', (e) => {
   if (!hasFiles(e)) return;
@@ -118,7 +158,12 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('dropzone').classList.remove('show');
-  importFiles(e.dataTransfer.files);
+  if (overLibrary(e)) {
+    if (library.collapsed) library.setCollapsed(false);
+    library.addFiles(e.dataTransfer.files);
+  } else {
+    importFiles(e.dataTransfer.files);
+  }
 });
 
 $('import').addEventListener('click', () => $('file').click());
@@ -156,7 +201,7 @@ async function startRecording() {
 async function stopRecording(discard = false) {
   const res = await recorder.finish();
   if (res && !discard) {
-    res.track.addClip(res.buffer, res.start, res.offset);
+    res.track.addClip(res.buffer, res.start, res.offset, 'Recording');
     setStatus(`Recorded ${res.buffer.duration.toFixed(1)} s into “${res.track.name}” (latency compensation ${Math.round(res.comp * 1000)} ms).`);
   }
   timeline.dirty = true;
@@ -182,6 +227,7 @@ async function stopTransport() {
 $('btn-play').addEventListener('click', togglePlay);
 $('btn-stop').addEventListener('click', stopTransport);
 $('btn-rec').addEventListener('click', () => (recorder.active ? stopRecording() : startRecording()));
+$('toggle-lib').addEventListener('click', () => library.toggle());
 $('add-audio').addEventListener('click', () => addAudioTrack());
 $('add-midi').addEventListener('click', () => {
   const t = addMidiTrack();
@@ -212,9 +258,14 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();
-  } else if ((e.key === 'Delete' || e.key === 'Backspace') && roll.track) {
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    // Piano-roll note if one is selected there, otherwise the selected clip.
+    if (roll.track && roll.sel) roll.deleteSelected();
+    else timeline.deleteSelected();
     e.preventDefault();
-    roll.deleteSelected();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+    e.preventDefault(); // also stops the browser's "bookmark page" shortcut
+    timeline.duplicateSelected();
   } else if (e.key === 'Home') {
     e.preventDefault();
     if (!recorder.active) {

@@ -24,7 +24,7 @@
   }
   button:hover { border-color: #46525f; }
   button:active { background: #2a2f38; }
-  input[type=number], select {
+  input[type=number], input[type=search], select {
     background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px;
   }
   input[type=range] { accent-color: var(--accent); margin: 0; }
@@ -48,8 +48,50 @@
   #zoom, #master { width: 100px; }
   .spacer { flex: 1; }
 
+  #toggle-lib.active { border-color: var(--accent); color: var(--accent); }
+
+  /* ---- workspace: loop library + timeline ---- */
+  #workspace { display: flex; min-height: 0; min-width: 0; }
+
+  #library {
+    flex: none; width: 264px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+    background: var(--panel); border-right: 1px solid var(--line); transition: width .15s ease;
+  }
+  #library.collapsed { width: 36px; }
+  .lib-head { display: flex; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); min-height: 44px; }
+  .lib-head strong { flex: 1; }
+  .lib-collapse { width: 26px; padding: 3px 0; }
+  #library.collapsed .lib-head { flex-direction: column; padding: 8px 4px; }
+  #library.collapsed .lib-head > :not(.lib-collapse),
+  #library.collapsed .lib-body { display: none; }
+  .lib-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .lib-search { margin: 8px; width: calc(100% - 16px); }
+  .lib-list { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 8px; }
+  .lib-cat { margin: 10px 2px 5px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .loop {
+    display: flex; align-items: center; gap: 8px; padding: 6px; margin-bottom: 5px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; cursor: grab; user-select: none;
+  }
+  .loop:hover { border-color: #46525f; }
+  .loop:active { cursor: grabbing; }
+  .loop.playing { border-color: var(--accent); }
+  .lp { flex: none; width: 26px; height: 26px; padding: 0; border-radius: 50%; font-size: 11px; line-height: 1; }
+  .loop.playing .lp { background: var(--accent); color: #00222f; border-color: var(--accent); }
+  .ltxt { min-width: 0; }
+  .lname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lmeta { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lib-empty { color: var(--dim); padding: 6px 4px; line-height: 1.45; }
+  .lib-empty code { background: var(--bg); padding: 1px 4px; border-radius: 3px; }
+  .lib-empty .dim { opacity: .7; }
+  .lib-foot { padding: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; line-height: 1.4; }
+
   /* ---- timeline ---- */
-  #timeline { position: relative; overflow: auto; min-height: 0; background: var(--bg); }
+  #timeline { flex: 1; min-width: 0; position: relative; overflow: auto; min-height: 0; background: var(--bg); }
+  .dropmark { position: absolute; z-index: 6; width: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); pointer-events: none; }
+  .dropmark[hidden] { display: none; }
+  .dropmark.newtrack { background: none; box-shadow: none; border-left: 2px dashed var(--accent); }
+  .dropmark.newtrack::after { content: '+ new track'; position: absolute; left: 8px; top: 8px; color: var(--accent); font-size: 12px; white-space: nowrap; }
+  .row.drop-target .lane::after { content: ''; position: absolute; inset: 0; border: 2px solid var(--accent); background: rgba(76,194,255,.08); pointer-events: none; }
   .inner { position: relative; width: calc(var(--head-w) + var(--lane-w)); min-width: 100%; }
   .row { display: flex; height: var(--row-h); border-bottom: 1px solid var(--line); }
   .ruler-row { position: sticky; top: 0; z-index: 4; height: 28px; background: var(--panel); }
@@ -131,13 +173,29 @@
   <label>Zoom <input id="zoom" type="range" min="0" max="100" value="50"></label>
   <label>Master <input id="master" type="range" min="-60" max="6" step="0.1" value="0"></label>
   <span class="spacer"></span>
+  <button id="toggle-lib" class="active" title="Show / hide the loop library">Loops</button>
   <button id="add-audio">+ Audio</button>
   <button id="add-midi">+ MIDI</button>
   <button id="import">Import…</button>
   <input id="file" type="file" multiple accept=".wav,.mp3,audio/wav,audio/mpeg" hidden>
 </header>
 
-<main id="timeline"></main>
+<div id="workspace">
+  <aside id="library" aria-label="Loop library">
+    <div class="lib-head">
+      <strong>Loops</strong>
+      <button class="lib-add" title="Add loop files for this session">+ Add</button>
+      <button class="lib-collapse" title="Collapse loop library" aria-expanded="true">«</button>
+    </div>
+    <div class="lib-body">
+      <input class="lib-search" type="search" placeholder="Filter loops…" aria-label="Filter loops">
+      <div class="lib-list"></div>
+      <div class="lib-foot">Drag a loop onto a track or into empty space. Drag clips to move them (Alt = no snap) · Ctrl+D duplicates · Delete removes.</div>
+    </div>
+    <input class="lib-file" type="file" multiple accept=".wav,.mp3,audio/wav,audio/mpeg" hidden>
+  </aside>
+  <main id="timeline"></main>
+</div>
 
 <section id="editor" hidden>
   <div class="roll-bar">
@@ -158,7 +216,7 @@
 </section>
 
 <footer id="status"></footer>
-<div id="dropzone">Drop WAV / MP3 files to add them as tracks</div>
+<div id="dropzone"><span id="dropmsg">Drop WAV / MP3 files to add them as tracks</span></div>
 
 <script type="module" src="./main.js"></script>
 </body>

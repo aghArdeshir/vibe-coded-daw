@@ -6,6 +6,11 @@ A tiny web-based DAW in pure native browser JS (ES modules, Web Audio, AudioWork
 - Stereo MIDI tracks with a sine synth and a basic piano roll
 - Per-track mute, solo, volume fader, pan and meter
 - Record into an armed audio track while the song plays
+- Collapsible loop library sidebar: preview loops, drag them onto the timeline (snapped to the beat), move clips between tracks, Ctrl+D to duplicate, Delete to remove
+
+## Loops
+
+Loops live in `loops/` and are listed in `loops/index.json` (see `loops/README.md`, including the licensing notes before you commit any). The four included demo loops are original and CC0. You can also press **+ Add** in the sidebar, or drop files on it, to load loops for the current session.
 
 ## Run
 
